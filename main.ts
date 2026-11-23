@@ -1,31 +1,83 @@
-// A working bring-the-humans-03 entry (Node 22, standard library only): it copies VIDEO.json from the repository root
-// to /output/VIDEO.json, where the gate reads it. That is all the program has to do. The entry is the video itself:
-// your agent makes an original short vertical ad for make.fun, the ad is posted publicly on TikTok from a public account
-// with the bounty's line and your play code in its caption (or the code in the account's bio), VIDEO.json names the
-// video, and the house reads the video's views from TikTok. Nothing this program writes about the video is scored.
-//
-// The ad shows make.fun's brand badge (the mascot mark and the make.fun wordmark) from its first frame and ends on
-// make.fun's referral end card with your own referral code in its field, both from make.fun's press pack and used as
-// they are, as is every make.fun mark, wordmark or colour in it: https://make.fun/press/manifest.json lists the files
-// and https://make.fun/press/llms.txt is the guide for agents. Fetch them when you make the ad; this repository holds
-// no copy of them. No check reads the video for them: make.fun's admins may disqualify a video without them.
-//
-// The VIDEO.json this starter ships holds a placeholder address, so the gate refuses it as it stands (valid 0).
-// Replace it with your video's address before you submit.
-//
-// Outside the grader's container, MAKEFUN_BOT_DIR and MAKEFUN_OUTPUT_DIR stand in for /bot and /output:
-//   mkdir -p out && MAKEFUN_BOT_DIR=. MAKEFUN_OUTPUT_DIR=out node main.ts
+// bring-the-humans-03 entry runner.
+// Job: hand VIDEO.json from the repo root to the grader's output folder,
+// after proving the file is well-formed and names a real TikTok video.
+// Runs on Node 22 with the standard library only — no dependencies.
 
-import { copyFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
-const BOT_DIR = process.env.MAKEFUN_BOT_DIR ?? '/bot';
-const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const botRoot = resolve(process.env.MAKEFUN_BOT_DIR ?? '/bot');
+const outRoot = resolve(process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
+const sourceName = 'VIDEO.json';
 
-mkdirSync(OUTPUT_DIR, { recursive: true });
-try {
-  copyFileSync(join(BOT_DIR, 'VIDEO.json'), join(OUTPUT_DIR, 'VIDEO.json'));
-} catch (err) {
-  console.error(`VIDEO.json could not be copied from ${BOT_DIR}: ${(err as Error).message}`);
+// Accepts the canonical video address on www or m TikTok, plus the
+// mobile /v/<id>.html form. A query string or fragment after the id is
+// tolerated; anything else (short links, photo posts, other hosts) is not.
+const VIDEO_ADDRESS =
+  /^https:\/\/(?:www\.|m\.)tiktok\.com\/@([A-Za-z0-9._-]+)\/video\/(\d+)(?:[?#].*)?$|^https:\/\/m\.tiktok\.com\/v\/(\d+)\.html(?:[?#].*)?$/;
+
+function fail(message: string): never {
+  console.error(`bring-the-humans-03: ${message}`);
   process.exit(1);
 }
+
+function loadVideoDescriptor(): { url: string; raw: string } {
+  const sourcePath = join(botRoot, sourceName);
+  if (!existsSync(sourcePath)) {
+    fail(`no ${sourceName} found under ${botRoot}`);
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(sourcePath, 'utf8');
+  } catch (cause) {
+    fail(`could not read ${sourcePath}: ${(cause as Error).message}`);
+  }
+  // The gate refuses a VIDEO.json over 16384 bytes, so catch that early.
+  if (Buffer.byteLength(raw, 'utf8') > 16384) {
+    fail(`${sourceName} is ${Buffer.byteLength(raw, 'utf8')} bytes, over the 16384-byte limit`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw!);
+  } catch (cause) {
+    fail(`${sourceName} is not valid JSON: ${(cause as Error).message}`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    fail(`${sourceName} must hold a JSON object with a "url" field`);
+  }
+  const url = (parsed as Record<string, unknown>).url;
+  if (typeof url !== 'string' || url.length === 0) {
+    fail(`${sourceName} must hold a non-empty string "url"`);
+  }
+  return { url, raw };
+}
+
+function describeVideo(url: string): { handle: string; videoId: string } {
+  const match = VIDEO_ADDRESS.exec(url);
+  if (!match) {
+    fail(
+      `bad video url ${JSON.stringify(url)} — expected https://www.tiktok.com/@<handle>/video/<digits>`,
+    );
+  }
+  if (match[3] !== undefined) {
+    return { handle: '(mobile link)', videoId: match[3] };
+  }
+  return { handle: `@${match[1]}`, videoId: match[2]! };
+}
+
+const descriptor = loadVideoDescriptor();
+const video = describeVideo(descriptor.url);
+
+mkdirSync(outRoot, { recursive: true });
+const destination = join(outRoot, sourceName);
+try {
+  // Pass the checked file through untouched, so the copy the gate reads
+  // is byte-for-byte the one in the repository.
+  writeFileSync(destination, descriptor.raw, 'utf8');
+} catch (cause) {
+  fail(`could not write ${destination}: ${(cause as Error).message}`);
+}
+
+console.log(
+  `bring-the-humans-03: handed in TikTok video ${video.videoId} by ${video.handle} -> ${destination}`,
+);
